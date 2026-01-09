@@ -19,8 +19,45 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
+const idSeparator = ":"
+
 // https://developer.github.com/guides/traversing-with-pagination/#basics-of-pagination
 var maxPerPage = 100
+
+// buildID joins the parts with the idSeparator.
+func buildID(parts ...string) string {
+	return strings.Join(parts, idSeparator)
+}
+
+// parseID splits the id by the idSeparator checking the count.
+func parseID(id string, count int) ([]string, error) {
+	parts := strings.SplitN(id, idSeparator, count)
+	if len(parts) != count {
+		return nil, fmt.Errorf("unexpected ID format (%q); expected %d parts separated by %q", id, count, idSeparator)
+	}
+
+	return parts, nil
+}
+
+// // parseID2 splits the id by the idSeparator into two parts.
+// func parseID2(id string) (string, string, error) {
+// 	parts, err := parseID(id, 2)
+// 	if err != nil {
+// 		return "", "", err
+// 	}
+
+// 	return parts[0], parts[1], nil
+// }
+
+// parseID3 splits the id by the idSeparator into three parts.
+func parseID3(id string) (string, string, string, error) {
+	parts, err := parseID(id, 3)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	return parts[0], parts[1], parts[2], nil
+}
 
 func checkOrganization(meta any) error {
 	if !meta.(*Owner).IsOrganization {

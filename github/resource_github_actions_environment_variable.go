@@ -8,15 +8,16 @@ import (
 	"net/url"
 
 	"github.com/google/go-github/v81/github"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 func resourceGithubActionsEnvironmentVariable() *schema.Resource {
 	return &schema.Resource{
-		Create: resourceGithubActionsEnvironmentVariableCreateOrUpdate,
-		Read:   resourceGithubActionsEnvironmentVariableRead,
-		Update: resourceGithubActionsEnvironmentVariableCreateOrUpdate,
-		Delete: resourceGithubActionsEnvironmentVariableDelete,
+		CreateContext: resourceGithubActionsEnvironmentVariableCreate,
+		ReadContext:   resourceGithubActionsEnvironmentVariableRead,
+		UpdateContext: resourceGithubActionsEnvironmentVariableUpdate,
+		DeleteContext: resourceGithubActionsEnvironmentVariableDelete,
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
@@ -59,50 +60,50 @@ func resourceGithubActionsEnvironmentVariable() *schema.Resource {
 	}
 }
 
-func resourceGithubActionsEnvironmentVariableCreateOrUpdate(d *schema.ResourceData, meta any) error {
-	client := meta.(*Owner).v3client
-	owner := meta.(*Owner).name
-	ctx := context.Background()
+func resourceGithubActionsEnvironmentVariableCreate(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	meta := m.(*Owner)
+	client := meta.v3client
+	owner := meta.name
 
 	repoName := d.Get("repository").(string)
 	envName := d.Get("environment").(string)
-	escapedEnvName := url.PathEscape(envName)
 	name := d.Get("variable_name").(string)
 
-	variable := &github.ActionsVariable{
+	escapedEnvName := url.PathEscape(envName)
+
+	_, err := client.Actions.CreateEnvVariable(ctx, owner, repoName, escapedEnvName, &github.ActionsVariable{
 		Name:  name,
 		Value: d.Get("value").(string),
+	})
+	if err != nil {
+		return diag.FromErr(err)
 	}
 
-	// Try to create the variable first
-	_, err := client.Actions.CreateEnvVariable(ctx, owner, repoName, escapedEnvName, variable)
-	if err != nil {
-		var ghErr *github.ErrorResponse
-		if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusConflict {
-			// Variable already exists, try to update instead
-			// If it fails here, we want to return the error otherwise continue
-			_, err = client.Actions.UpdateEnvVariable(ctx, owner, repoName, escapedEnvName, variable)
-			if err != nil {
-				return err
-			}
-		} else {
-			return err
+	d.SetId(buildID(repoName, envName, name))
+
+	// GitHub API does not return on create so we have to lookup the variable to get timestamps
+	if variable, _, err := client.Actions.GetEnvVariable(ctx, owner, repoName, escapedEnvName, name); err == nil {
+		if err := d.Set("created_at", variable.CreatedAt.String()); err != nil {
+			return diag.FromErr(err)
+		}
+		if err := d.Set("updated_at", variable.UpdatedAt.String()); err != nil {
+			return diag.FromErr(err)
 		}
 	}
 
-	d.SetId(buildThreePartID(repoName, envName, name))
-	return resourceGithubActionsEnvironmentVariableRead(d, meta)
+	return nil
 }
 
-func resourceGithubActionsEnvironmentVariableRead(d *schema.ResourceData, meta any) error {
-	client := meta.(*Owner).v3client
-	owner := meta.(*Owner).name
-	ctx := context.Background()
+func resourceGithubActionsEnvironmentVariableRead(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	meta := m.(*Owner)
+	client := meta.v3client
+	owner := meta.name
 
-	repoName, envName, name, err := parseThreePartID(d.Id(), "repository", "environment", "variable_name")
+	repoName, envName, name, err := parseID3(d.Id())
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
+
 	escapedEnvName := url.PathEscape(envName)
 
 	variable, _, err := client.Actions.GetEnvVariable(ctx, owner, repoName, escapedEnvName, name)
@@ -116,31 +117,71 @@ func resourceGithubActionsEnvironmentVariableRead(d *schema.ResourceData, meta a
 				return nil
 			}
 		}
-		return err
+		return diag.FromErr(err)
 	}
 
-	_ = d.Set("repository", repoName)
-	_ = d.Set("environment", envName)
-	_ = d.Set("variable_name", name)
-	_ = d.Set("value", variable.Value)
-	_ = d.Set("created_at", variable.CreatedAt.String())
-	_ = d.Set("updated_at", variable.UpdatedAt.String())
+	if err = d.Set("value", variable.Value); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("created_at", variable.CreatedAt.String()); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("updated_at", variable.UpdatedAt.String()); err != nil {
+		return diag.FromErr(err)
+	}
 
 	return nil
 }
 
-func resourceGithubActionsEnvironmentVariableDelete(d *schema.ResourceData, meta any) error {
-	client := meta.(*Owner).v3client
-	owner := meta.(*Owner).name
-	ctx := context.WithValue(context.Background(), ctxId, d.Id())
+func resourceGithubActionsEnvironmentVariableUpdate(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	meta := m.(*Owner)
+	client := meta.v3client
+	owner := meta.name
 
-	repoName, envName, name, err := parseThreePartID(d.Id(), "repository", "environment", "variable_name")
+	repoName, envName, name, err := parseID3(d.Id())
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
+
+	escapedEnvName := url.PathEscape(envName)
+
+	_, err = client.Actions.UpdateEnvVariable(ctx, owner, repoName, escapedEnvName, &github.ActionsVariable{
+		Name:  name,
+		Value: d.Get("value").(string),
+	})
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	// GitHub API does not return on create so we have to lookup the variable to get timestamps
+	if variable, _, err := client.Actions.GetEnvVariable(ctx, owner, repoName, escapedEnvName, name); err == nil {
+		if err := d.Set("created_at", variable.CreatedAt.String()); err != nil {
+			return diag.FromErr(err)
+		}
+		if err := d.Set("updated_at", variable.UpdatedAt.String()); err != nil {
+			return diag.FromErr(err)
+		}
+	}
+
+	return nil
+}
+
+func resourceGithubActionsEnvironmentVariableDelete(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	meta := m.(*Owner)
+	client := meta.v3client
+	owner := meta.name
+
+	repoName, envName, name, err := parseID3(d.Id())
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	escapedEnvName := url.PathEscape(envName)
 
 	_, err = client.Actions.DeleteEnvVariable(ctx, owner, repoName, escapedEnvName, name)
+	if err != nil {
+		return diag.FromErr(err)
+	}
 
-	return err
+	return nil
 }
