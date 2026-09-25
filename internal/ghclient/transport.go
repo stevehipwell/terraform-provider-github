@@ -9,7 +9,6 @@ import (
 	ratelimitp "github.com/gofri/go-github-ratelimit/v2/github_ratelimit/github_primary_ratelimit"
 	ratelimits "github.com/gofri/go-github-ratelimit/v2/github_ratelimit/github_secondary_ratelimit"
 	"github.com/hashicorp/go-retryablehttp"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/logging"
 	"golang.org/x/oauth2"
 )
@@ -65,25 +64,16 @@ func newTransport(tokenSource oauth2.TokenSource, opts ClientOptions) (http.Roun
 		retryClient.RetryMax = opts.RetryMax
 		retryClient.RetryWaitMin = opts.RetryWaitMin
 		retryClient.RetryWaitMax = opts.RetryWaitMax
+		retryClient.CheckRetry = checkRetryNoRatelimit
 
 		tr = &retryablehttp.RoundTripper{Client: retryClient}
 	}
+
+	tr = ratelimit.New(tr, ratelimitp.WithLimitDetectedCallback(primaryRateLimitCallback), ratelimits.WithLimitDetectedCallback(secondaryRateLimitCallback))
 
 	if opts.Sema != nil {
 		tr = &throttler{sema: opts.Sema, inner: tr}
 	}
 
-	tr = ratelimit.New(tr, ratelimitp.WithLimitDetectedCallback(primaryRateLimitCallback), ratelimits.WithLimitDetectedCallback(secondaryRateLimitCallback))
-
 	return tr, nil
-}
-
-// primaryRateLimitCallback is a callback function that is called when the GitHub API primary rate limit is detected. It logs a warning message with the category of the rate limit and the reset time.
-func primaryRateLimitCallback(cb *ratelimitp.CallbackContext) {
-	tflog.Warn(cb.Request.Context(), "GitHub API primary rate limit detected.", map[string]any{"category": cb.Category, "reset_time": cb.ResetTime})
-}
-
-// secondaryRateLimitCallback is a callback function that is called when the GitHub API secondary rate limit is detected. It logs a warning message with the reset time.
-func secondaryRateLimitCallback(cb *ratelimits.CallbackContext) {
-	tflog.Warn(cb.Request.Context(), "GitHub API secondary rate limit detected.", map[string]any{"reset_time": cb.ResetTime})
 }
